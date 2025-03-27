@@ -23,6 +23,8 @@ interface HistoricalPriceChartProps {
 const HistoricalPriceChart: React.FC<HistoricalPriceChartProps> = ({
   token0Symbol,
   token1Symbol,
+  // poolAddress is not currently used in the component logic
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   poolAddress,
   swapEvents = [],
   isLoading = false,

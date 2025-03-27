@@ -49,7 +49,7 @@ const Home: NextPage = () => {
   const [lpTokenAmount, setLpTokenAmount] = useState<string>("");
   const [swapFromToken, setSwapFromToken] = useState<"token0" | "token1">("token0");
   const [deadline, setDeadline] = useState<string>((Math.floor(Date.now() / 1000) + 60 * 20).toString()); // 20 minutes
-  const [routerAddress, setRouterAddress] = useState<string>("0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3"); // Sepolia router
+  const [routerAddress] = useState<string>("0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3"); // Sepolia router
 
   // Find the selected pool from our pools array
   const selectedPool = pools.find(pool => pool.address === selectedPoolAddress);
@@ -807,27 +807,14 @@ const Home: NextPage = () => {
 
   // Format token name/symbol for display
   const formatTokenName = (token: TokenInfo) => {
-    return token.symbol ? `${token.symbol} (${token.address.substring(0, 6)}...)` : token.address;
+    return token.symbol || token.address.substring(0, 6) + "..." + token.address.substring(38);
   };
 
   // Format token amount with decimals
-  const formatTokenAmount = (amount: string, decimals = 18) => {
-    try {
-      const amountBigInt = BigInt(amount);
-      const divisor = BigInt(10) ** BigInt(decimals);
-      const integerPart = amountBigInt / divisor;
-
-      // Get the decimal part with proper trailing zeros
-      const decimalPartRaw = amountBigInt % divisor;
-      const decimalPartStr = decimalPartRaw.toString().padStart(decimals, "0");
-
-      // Trim trailing zeros, but keep at least 2 decimal places
-      const trimmedDecimalPart = decimalPartStr.replace(/0+$/, "").padEnd(2, "0");
-
-      return `${integerPart}.${trimmedDecimalPart}`;
-    } catch (e) {
-      return amount;
-    }
+  const formatTokenAmount = (amount: string, decimals?: number) => {
+    // Format the token amount for display
+    if (!amount) return "0";
+    return parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: 6 });
   };
 
   return (

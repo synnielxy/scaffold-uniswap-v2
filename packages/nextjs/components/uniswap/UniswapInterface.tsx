@@ -16,6 +16,7 @@ const UniswapInterface = () => {
   const [amountIn, setAmountIn] = useState<string>("0");
   const [amountOutMin, setAmountOutMin] = useState<string>("0");
   const [deadline, setDeadline] = useState<string>((Math.floor(Date.now() / 1000) + 60 * 20).toString()); // 20 minutes from now
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [routerAddress, setRouterAddress] = useState<string>("0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3"); // Sepolia router
 
   // Read WETH address from UniswapV2Router02
