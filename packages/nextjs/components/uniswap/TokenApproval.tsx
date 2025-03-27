@@ -1,0 +1,116 @@
+import { useState } from "react";
+import { useAccount } from "wagmi";
+import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+import { useScaffoldContract } from "~~/hooks/scaffold-eth/useScaffoldContract";
+import { useScaffoldWriteContract } from "~~/hooks/scaffold-eth/useScaffoldWriteContract";
+
+interface TokenApprovalProps {
+  tokenAddress: string;
+  spenderAddress: string;
+}
+
+const TokenApproval = ({ tokenAddress, spenderAddress }: TokenApprovalProps) => {
+  const { address } = useAccount();
+  const { targetNetwork } = useTargetNetwork();
+  const [approvalAmount, setApprovalAmount] = useState<string>("0");
+
+  // ERC20 Token ABI for approval
+  const erc20Abi = [
+    {
+      constant: false,
+      inputs: [
+        {
+          name: "spender",
+          type: "address",
+        },
+        {
+          name: "value",
+          type: "uint256",
+        },
+      ],
+      name: "approve",
+      outputs: [
+        {
+          name: "",
+          type: "bool",
+        },
+      ],
+      payable: false,
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ];
+
+  // Get the token contract
+  const { data: tokenContract } = useScaffoldContract({
+    contractName: "ERC20Token",
+    walletClient: undefined,
+    chainId: targetNetwork.id,
+  });
+
+  // Setup contract write function for approval
+  const { writeAsync: approveToken, isLoading: isApproving } = useScaffoldWriteContract({
+    contractName: "ERC20Token",
+    functionName: "approve",
+    address: tokenAddress,
+    abi: erc20Abi,
+    args: [spenderAddress, BigInt(approvalAmount)],
+    chainId: targetNetwork.id,
+  });
+
+  const handleApprove = async () => {
+    try {
+      if (!tokenAddress || !spenderAddress) {
+        alert("Please enter valid token and spender addresses");
+        return;
+      }
+
+      await approveToken();
+    } catch (error) {
+      console.error("Error approving tokens:", error);
+    }
+  };
+
+  // Handle approving max amount (uint256 max value)
+  const handleApproveMax = () => {
+    setApprovalAmount("115792089237316195423570985008687907853269984665640564039457584007913129639935"); // 2^256 - 1
+  };
+
+  return (
+    <div className="bg-base-200 p-4 rounded-lg shadow mb-6">
+      <h3 className="text-lg font-semibold mb-3">Token Approval</h3>
+
+      <div className="form-control mb-3">
+        <label className="label">
+          <span className="label-text">Approval Amount</span>
+        </label>
+        <div className="flex space-x-2">
+          <input
+            type="text"
+            placeholder="Amount to approve"
+            className="input input-bordered flex-1"
+            value={approvalAmount}
+            onChange={e => setApprovalAmount(e.target.value)}
+          />
+          <button className="btn btn-secondary btn-sm whitespace-nowrap" onClick={handleApproveMax}>
+            Approve Max
+          </button>
+        </div>
+      </div>
+
+      <button
+        className="btn btn-primary w-full mt-2"
+        onClick={handleApprove}
+        disabled={!tokenAddress || !spenderAddress || !approvalAmount || isApproving}
+      >
+        {isApproving ? "Approving..." : "Approve Token"}
+      </button>
+
+      <div className="mt-3 text-xs opacity-70">
+        <p>Approving tokens allows the Uniswap Router to spend your tokens when swapping.</p>
+      </div>
+    </div>
+  );
+};
+
+export default TokenApproval;

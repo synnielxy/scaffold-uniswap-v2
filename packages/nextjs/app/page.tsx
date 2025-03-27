@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { NextPage } from "next";
-import { useAccount, usePublicClient } from "wagmi";
+import { parseUnits } from "viem";
+import { useAccount, usePublicClient, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
 import { Address } from "~~/components/scaffold-eth";
+import PoolVisualization from "~~/components/uniswap/PoolVisualization";
 import { useScaffoldReadContract } from "~~/hooks/scaffold-eth";
 
 // Known token address mapping (address -> symbol, decimals)
@@ -30,12 +32,161 @@ interface PoolInfo {
   reserves: [string, string];
 }
 
+// Define tab options for pool actions
+type ActionTab = "deposit" | "redeem" | "swap";
+
 const Home: NextPage = () => {
   const { address: connectedAddress } = useAccount();
   const publicClient = usePublicClient();
   const [selectedPoolAddress, setSelectedPoolAddress] = useState<string>("");
   const [pools, setPools] = useState<PoolInfo[]>([]);
   const [isLoadingPoolDetails, setIsLoadingPoolDetails] = useState(false);
+  // New state variables for UI interaction
+  const [activeTab, setActiveTab] = useState<ActionTab>("deposit");
+  const [token0Amount, setToken0Amount] = useState<string>("");
+  const [token1Amount, setToken1Amount] = useState<string>("");
+  const [slippageTolerance, setSlippageTolerance] = useState<string>("0.5");
+  const [lpTokenAmount, setLpTokenAmount] = useState<string>("");
+  const [swapFromToken, setSwapFromToken] = useState<"token0" | "token1">("token0");
+  const [deadline, setDeadline] = useState<string>((Math.floor(Date.now() / 1000) + 60 * 20).toString()); // 20 minutes
+  const [routerAddress, setRouterAddress] = useState<string>("0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3"); // Sepolia router
+
+  // Find the selected pool from our pools array
+  const selectedPool = pools.find(pool => pool.address === selectedPoolAddress);
+
+  // Contract write hooks for token approvals and interactions
+  const { writeContract: writeApprove, isPending: isApproveWritePending, data: approveTxHash } = useWriteContract();
+  const {
+    writeContract: writeAddLiquidity,
+    isPending: isAddLiquidityWritePending,
+    data: addLiquidityTxHash,
+  } = useWriteContract();
+  const {
+    writeContract: writeRemoveLiquidity,
+    isPending: isRemoveLiquidityWritePending,
+    data: removeLiquidityTxHash,
+  } = useWriteContract();
+  const { writeContract: writeSwap, isPending: isSwapWritePending, data: swapTxHash } = useWriteContract();
+
+  // Track which token was last approved
+  const [lastApprovedToken, setLastApprovedToken] = useState<"token0" | "token1" | null>(null);
+
+  // Track transaction confirmations
+  const { isLoading: isConfirmingApproval, isSuccess: isApprovalSuccessful } = useWaitForTransactionReceipt({
+    hash: approveTxHash,
+  });
+  const { isLoading: isConfirmingAddLiquidity, isSuccess: isAddLiquiditySuccessful } = useWaitForTransactionReceipt({
+    hash: addLiquidityTxHash,
+  });
+  const { isLoading: isConfirmingRemoveLiquidity, isSuccess: isRemoveLiquiditySuccessful } =
+    useWaitForTransactionReceipt({
+      hash: removeLiquidityTxHash,
+    });
+  const { isLoading: isConfirmingSwap, isSuccess: isSwapSuccessful } = useWaitForTransactionReceipt({
+    hash: swapTxHash,
+  });
+
+  // Add a state to track when we need to refresh pool details
+  const [shouldRefreshPool, setShouldRefreshPool] = useState(false);
+
+  // Track successful transactions to trigger pool refresh
+  useEffect(() => {
+    if (isApprovalSuccessful || isAddLiquiditySuccessful || isRemoveLiquiditySuccessful || isSwapSuccessful) {
+      console.log("Transaction confirmed - refreshing pool details");
+      setShouldRefreshPool(true);
+
+      // Clear input fields after successful transactions
+      if (isAddLiquiditySuccessful) {
+        setToken0Amount("");
+        setToken1Amount("");
+      } else if (isRemoveLiquiditySuccessful) {
+        setLpTokenAmount("");
+      } else if (isSwapSuccessful) {
+        if (swapFromToken === "token0") {
+          setToken0Amount("");
+        } else {
+          setToken1Amount("");
+        }
+      }
+    }
+  }, [isApprovalSuccessful, isAddLiquiditySuccessful, isRemoveLiquiditySuccessful, isSwapSuccessful, swapFromToken]);
+
+  // Refresh pool details when needed
+  useEffect(() => {
+    const refreshPoolDetails = async () => {
+      if (!shouldRefreshPool || !selectedPoolAddress || !publicClient) return;
+
+      console.log("Refreshing pool details for:", selectedPoolAddress);
+      setIsLoadingPoolDetails(true);
+
+      try {
+        // The ABI for the functions we need to call on the pair contract
+        const pairAbi = [
+          {
+            inputs: [],
+            name: "getReserves",
+            outputs: [
+              { internalType: "uint112", name: "reserve0", type: "uint112" },
+              { internalType: "uint112", name: "reserve1", type: "uint112" },
+              { internalType: "uint32", name: "blockTimestampLast", type: "uint32" },
+            ],
+            stateMutability: "view",
+            type: "function",
+          },
+        ] as const;
+
+        // Read reserves
+        const reserves = (await publicClient.readContract({
+          address: selectedPoolAddress as `0x${string}`,
+          abi: pairAbi,
+          functionName: "getReserves",
+        })) as [bigint, bigint, number];
+
+        // Update the pool information with new reserves
+        setPools(prevPools =>
+          prevPools.map(pool =>
+            pool.address === selectedPoolAddress
+              ? {
+                  ...pool,
+                  reserves: [reserves[0].toString(), reserves[1].toString()] as [string, string],
+                }
+              : pool,
+          ),
+        );
+
+        // Reset refresh flag
+        setShouldRefreshPool(false);
+      } catch (error) {
+        console.error("Error refreshing pool details:", error);
+      } finally {
+        setIsLoadingPoolDetails(false);
+      }
+    };
+
+    refreshPoolDetails();
+  }, [shouldRefreshPool, selectedPoolAddress, publicClient]);
+
+  // Add a periodic refresh for pool details
+  useEffect(() => {
+    if (!selectedPoolAddress || !publicClient) return;
+
+    // Set up periodic refresh (every 15 seconds)
+    const refreshIntervalId = setInterval(() => {
+      setShouldRefreshPool(true);
+    }, 15000);
+
+    // Clean up interval on unmount or when selected pool changes
+    return () => {
+      clearInterval(refreshIntervalId);
+    };
+  }, [selectedPoolAddress, publicClient]);
+
+  // Derived loading states
+  const isApprovingToken0 = (isApproveWritePending || isConfirmingApproval) && lastApprovedToken === "token0";
+  const isApprovingToken1 = (isApproveWritePending || isConfirmingApproval) && lastApprovedToken === "token1";
+  const isAddingLiquidity = isAddLiquidityWritePending || isConfirmingAddLiquidity;
+  const isRemovingLiquidity = isRemoveLiquidityWritePending || isConfirmingRemoveLiquidity;
+  const isSwapping = isSwapWritePending || isConfirmingSwap;
 
   // Get pool count from factory
   const { data: allPairsLength } = useScaffoldReadContract({
@@ -406,8 +557,253 @@ const Home: NextPage = () => {
     }
   }, [selectedPoolAddress, publicClient]);
 
-  // Find the selected pool from our pools array
-  const selectedPool = pools.find(pool => pool.address === selectedPoolAddress);
+  // Update deadline every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDeadline((Math.floor(Date.now() / 1000) + 60 * 20).toString()); // 20 minutes from now
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ERC20 approve ABI
+  const erc20ApproveAbi = [
+    {
+      constant: false,
+      inputs: [
+        { name: "spender", type: "address" },
+        { name: "value", type: "uint256" },
+      ],
+      name: "approve",
+      outputs: [{ name: "", type: "bool" }],
+      payable: false,
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ] as const;
+
+  // Router ABIs
+  const routerAddLiquidityAbi = [
+    {
+      inputs: [
+        { name: "tokenA", type: "address" },
+        { name: "tokenB", type: "address" },
+        { name: "amountADesired", type: "uint256" },
+        { name: "amountBDesired", type: "uint256" },
+        { name: "amountAMin", type: "uint256" },
+        { name: "amountBMin", type: "uint256" },
+        { name: "to", type: "address" },
+        { name: "deadline", type: "uint256" },
+      ],
+      name: "addLiquidity",
+      outputs: [
+        { name: "amountA", type: "uint256" },
+        { name: "amountB", type: "uint256" },
+        { name: "liquidity", type: "uint256" },
+      ],
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ] as const;
+
+  const routerRemoveLiquidityAbi = [
+    {
+      inputs: [
+        { name: "tokenA", type: "address" },
+        { name: "tokenB", type: "address" },
+        { name: "liquidity", type: "uint256" },
+        { name: "amountAMin", type: "uint256" },
+        { name: "amountBMin", type: "uint256" },
+        { name: "to", type: "address" },
+        { name: "deadline", type: "uint256" },
+      ],
+      name: "removeLiquidity",
+      outputs: [
+        { name: "amountA", type: "uint256" },
+        { name: "amountB", type: "uint256" },
+      ],
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ] as const;
+
+  const routerSwapAbi = [
+    {
+      inputs: [
+        { name: "amountIn", type: "uint256" },
+        { name: "amountOutMin", type: "uint256" },
+        { name: "path", type: "address[]" },
+        { name: "to", type: "address" },
+        { name: "deadline", type: "uint256" },
+      ],
+      name: "swapExactTokensForTokens",
+      outputs: [{ name: "amounts", type: "uint256[]" }],
+      stateMutability: "nonpayable",
+      type: "function",
+    },
+  ] as const;
+
+  // Handle approve token
+  const handleApproveToken = async (tokenType: "token0" | "token1") => {
+    try {
+      if (!connectedAddress || !selectedPool) {
+        alert("Please connect your wallet and select a pool");
+        return;
+      }
+
+      const tokenAddress = tokenType === "token0" ? selectedPool.token0.address : selectedPool.token1.address;
+      const amount = tokenType === "token0" ? token0Amount : token1Amount;
+      const decimals = tokenType === "token0" ? selectedPool.token0.decimals || 18 : selectedPool.token1.decimals || 18;
+
+      if (!amount || Number(amount) <= 0) {
+        alert("Please enter a valid amount");
+        return;
+      }
+
+      // Unlimited approval amount (2^256 - 1)
+      const maxApproval = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+      // Set which token we're approving for loading state
+      setLastApprovedToken(tokenType);
+
+      writeApprove({
+        address: tokenAddress as `0x${string}`,
+        abi: erc20ApproveAbi,
+        functionName: "approve",
+        args: [routerAddress as `0x${string}`, BigInt(maxApproval)],
+      });
+    } catch (error) {
+      console.error(`Error approving ${tokenType}:`, error);
+      alert(`Error approving token: ${(error as Error).message}`);
+      setLastApprovedToken(null);
+    }
+  };
+
+  // Handle deposit (add liquidity)
+  const handleDeposit = async () => {
+    try {
+      if (!connectedAddress || !selectedPool) {
+        alert("Please connect your wallet and select a pool");
+        return;
+      }
+
+      if (!token0Amount || !token1Amount || Number(token0Amount) <= 0 || Number(token1Amount) <= 0) {
+        alert("Please enter valid amounts for both tokens");
+        return;
+      }
+
+      const decimals0 = selectedPool.token0.decimals || 18;
+      const decimals1 = selectedPool.token1.decimals || 18;
+
+      // Calculate amounts with proper decimal points
+      const amountA = parseUnits(token0Amount, decimals0);
+      const amountB = parseUnits(token1Amount, decimals1);
+
+      // Calculate minimum amounts based on slippage tolerance
+      const slippagePercent = parseFloat(slippageTolerance) / 100;
+      const amountAMin = (amountA * BigInt(Math.floor((1 - slippagePercent) * 1000))) / BigInt(1000);
+      const amountBMin = (amountB * BigInt(Math.floor((1 - slippagePercent) * 1000))) / BigInt(1000);
+
+      writeAddLiquidity({
+        address: routerAddress as `0x${string}`,
+        abi: routerAddLiquidityAbi,
+        functionName: "addLiquidity",
+        args: [
+          selectedPool.token0.address as `0x${string}`,
+          selectedPool.token1.address as `0x${string}`,
+          amountA,
+          amountB,
+          amountAMin,
+          amountBMin,
+          connectedAddress as `0x${string}`,
+          BigInt(deadline),
+        ],
+      });
+    } catch (error) {
+      console.error("Error adding liquidity:", error);
+      alert(`Error adding liquidity: ${(error as Error).message}`);
+    }
+  };
+
+  // Handle redeem (remove liquidity)
+  const handleRedeem = async () => {
+    try {
+      if (!connectedAddress || !selectedPool) {
+        alert("Please connect your wallet and select a pool");
+        return;
+      }
+
+      if (!lpTokenAmount || Number(lpTokenAmount) <= 0) {
+        alert("Please enter a valid LP token amount to redeem");
+        return;
+      }
+
+      // For simplicity, we're setting minimum amounts to 0, meaning any amount of tokens is acceptable
+      // In a production app, you would calculate these based on user's slippage preference
+      writeRemoveLiquidity({
+        address: routerAddress as `0x${string}`,
+        abi: routerRemoveLiquidityAbi,
+        functionName: "removeLiquidity",
+        args: [
+          selectedPool.token0.address as `0x${string}`,
+          selectedPool.token1.address as `0x${string}`,
+          parseUnits(lpTokenAmount, 18), // LP tokens typically have 18 decimals
+          BigInt(0), // amountAMin - minimum amount of token0 to receive
+          BigInt(0), // amountBMin - minimum amount of token1 to receive
+          connectedAddress as `0x${string}`,
+          BigInt(deadline),
+        ],
+      });
+    } catch (error) {
+      console.error("Error removing liquidity:", error);
+      alert(`Error removing liquidity: ${(error as Error).message}`);
+    }
+  };
+
+  // Handle swap
+  const handleSwap = async () => {
+    try {
+      if (!connectedAddress || !selectedPool) {
+        alert("Please connect your wallet and select a pool");
+        return;
+      }
+
+      const amount = swapFromToken === "token0" ? token0Amount : token1Amount;
+      if (!amount || Number(amount) <= 0) {
+        alert("Please enter a valid amount to swap");
+        return;
+      }
+
+      const fromTokenAddress = swapFromToken === "token0" ? selectedPool.token0.address : selectedPool.token1.address;
+
+      const toTokenAddress = swapFromToken === "token0" ? selectedPool.token1.address : selectedPool.token0.address;
+
+      const fromTokenDecimals =
+        swapFromToken === "token0" ? selectedPool.token0.decimals || 18 : selectedPool.token1.decimals || 18;
+
+      // Calculate swap amount with proper decimal points
+      const amountIn = parseUnits(amount, fromTokenDecimals);
+
+      // For simplicity, we're setting minimum output to 0, meaning any amount out is acceptable
+      // In a production app, you would calculate this based on user's slippage preference
+      const amountOutMin = BigInt(0);
+
+      writeSwap({
+        address: routerAddress as `0x${string}`,
+        abi: routerSwapAbi,
+        functionName: "swapExactTokensForTokens",
+        args: [
+          amountIn,
+          amountOutMin,
+          [fromTokenAddress as `0x${string}`, toTokenAddress as `0x${string}`],
+          connectedAddress as `0x${string}`,
+          BigInt(deadline),
+        ],
+      });
+    } catch (error) {
+      console.error("Error swapping tokens:", error);
+      alert(`Error swapping tokens: ${(error as Error).message}`);
+    }
+  };
 
   // Format token name/symbol for display
   const formatTokenName = (token: TokenInfo) => {
@@ -478,7 +874,7 @@ const Home: NextPage = () => {
             </div>
 
             {selectedPool && (
-              <div className="card w-full max-w-md bg-base-100 shadow-xl">
+              <div className="card w-full max-w-md bg-base-100 shadow-xl mb-8">
                 <div className="card-body">
                   <h2 className="card-title flex justify-between">
                     Pool Details
@@ -526,6 +922,228 @@ const Home: NextPage = () => {
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Add Pool Visualization before Pool Actions */}
+            {selectedPool && (
+              <div className="card w-full max-w-md bg-base-100 shadow-xl mb-8">
+                <div className="card-body">
+                  <PoolVisualization
+                    token0={selectedPool.token0}
+                    token1={selectedPool.token1}
+                    reserves={selectedPool.reserves}
+                    activeTab={activeTab}
+                    swapAmount={swapFromToken === "token0" ? token0Amount : token1Amount}
+                    swapFromToken={swapFromToken}
+                    isLoading={isLoadingPoolDetails}
+                    poolAddress={selectedPool.address}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Pool Actions UI */}
+            {selectedPool && (
+              <div className="card w-full max-w-md bg-base-100 shadow-xl">
+                <div className="card-body">
+                  <h2 className="card-title">Pool Actions</h2>
+
+                  {/* Tabs */}
+                  <div className="tabs tabs-boxed mb-4">
+                    <a
+                      className={`tab ${activeTab === "deposit" ? "tab-active" : ""}`}
+                      onClick={() => setActiveTab("deposit")}
+                    >
+                      Deposit
+                    </a>
+                    <a
+                      className={`tab ${activeTab === "redeem" ? "tab-active" : ""}`}
+                      onClick={() => setActiveTab("redeem")}
+                    >
+                      Redeem
+                    </a>
+                    <a
+                      className={`tab ${activeTab === "swap" ? "tab-active" : ""}`}
+                      onClick={() => setActiveTab("swap")}
+                    >
+                      Swap
+                    </a>
+                  </div>
+
+                  {/* Deposit UI */}
+                  {activeTab === "deposit" && (
+                    <div>
+                      <div className="form-control mb-3">
+                        <label className="label">
+                          <span className="label-text">{selectedPool.token0.symbol} Amount</span>
+                        </label>
+                        <div className="flex space-x-2">
+                          <input
+                            type="text"
+                            placeholder={`Amount of ${selectedPool.token0.symbol}`}
+                            className="input input-bordered flex-1"
+                            value={token0Amount}
+                            onChange={e => setToken0Amount(e.target.value)}
+                          />
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleApproveToken("token0")}
+                            disabled={!token0Amount || isApprovingToken0}
+                          >
+                            {isApprovingToken0 ? "Approving..." : "Approve"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="form-control mb-3">
+                        <label className="label">
+                          <span className="label-text">{selectedPool.token1.symbol} Amount</span>
+                        </label>
+                        <div className="flex space-x-2">
+                          <input
+                            type="text"
+                            placeholder={`Amount of ${selectedPool.token1.symbol}`}
+                            className="input input-bordered flex-1"
+                            value={token1Amount}
+                            onChange={e => setToken1Amount(e.target.value)}
+                          />
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleApproveToken("token1")}
+                            disabled={!token1Amount || isApprovingToken1}
+                          >
+                            {isApprovingToken1 ? "Approving..." : "Approve"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="form-control mb-4">
+                        <label className="label">
+                          <span className="label-text">Slippage Tolerance (%)</span>
+                        </label>
+                        <input
+                          type="number"
+                          placeholder="Slippage tolerance"
+                          className="input input-bordered"
+                          value={slippageTolerance}
+                          onChange={e => setSlippageTolerance(e.target.value)}
+                          min="0.1"
+                          max="10"
+                          step="0.1"
+                        />
+                      </div>
+
+                      <button
+                        className="btn btn-primary w-full"
+                        onClick={handleDeposit}
+                        disabled={!token0Amount || !token1Amount || isAddingLiquidity}
+                      >
+                        {isAddingLiquidity ? "Adding Liquidity..." : "Add Liquidity"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Redeem UI */}
+                  {activeTab === "redeem" && (
+                    <div>
+                      <div className="form-control mb-4">
+                        <label className="label">
+                          <span className="label-text">LP Token Amount</span>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Amount of LP tokens to redeem"
+                          className="input input-bordered"
+                          value={lpTokenAmount}
+                          onChange={e => setLpTokenAmount(e.target.value)}
+                        />
+                      </div>
+
+                      <button
+                        className="btn btn-primary w-full"
+                        onClick={handleRedeem}
+                        disabled={!lpTokenAmount || isRemovingLiquidity}
+                      >
+                        {isRemovingLiquidity ? "Removing Liquidity..." : "Remove Liquidity"}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Swap UI */}
+                  {activeTab === "swap" && (
+                    <div>
+                      <div className="form-control mb-3">
+                        <label className="label">
+                          <span className="label-text">Swap Direction</span>
+                        </label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={swapFromToken}
+                          onChange={e => setSwapFromToken(e.target.value as "token0" | "token1")}
+                        >
+                          <option value="token0">
+                            {selectedPool.token0.symbol} → {selectedPool.token1.symbol}
+                          </option>
+                          <option value="token1">
+                            {selectedPool.token1.symbol} → {selectedPool.token0.symbol}
+                          </option>
+                        </select>
+                      </div>
+
+                      <div className="form-control mb-4">
+                        <label className="label">
+                          <span className="label-text">
+                            {swapFromToken === "token0" ? selectedPool.token0.symbol : selectedPool.token1.symbol}{" "}
+                            Amount
+                          </span>
+                        </label>
+                        <div className="flex space-x-2">
+                          <input
+                            type="text"
+                            placeholder={`Amount to swap`}
+                            className="input input-bordered flex-1"
+                            value={swapFromToken === "token0" ? token0Amount : token1Amount}
+                            onChange={e =>
+                              swapFromToken === "token0"
+                                ? setToken0Amount(e.target.value)
+                                : setToken1Amount(e.target.value)
+                            }
+                          />
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => handleApproveToken(swapFromToken)}
+                            disabled={
+                              !(swapFromToken === "token0" ? token0Amount : token1Amount) ||
+                              (swapFromToken === "token0" ? isApprovingToken0 : isApprovingToken1)
+                            }
+                          >
+                            {(swapFromToken === "token0" ? isApprovingToken0 : isApprovingToken1)
+                              ? "Approving..."
+                              : "Approve"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn btn-primary w-full"
+                        onClick={handleSwap}
+                        disabled={!(swapFromToken === "token0" ? token0Amount : token1Amount) || isSwapping}
+                      >
+                        {isSwapping ? "Swapping..." : "Swap Tokens"}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="mt-4 text-sm opacity-70">
+                    <p>Note: Before interacting with the pool, ensure you have:</p>
+                    <ol className="list-decimal list-inside mt-2">
+                      <li>Approved the contracts to spend your tokens</li>
+                      <li>Sufficient token balance for the operation</li>
+                      <li>Confirmed the transaction details</li>
+                    </ol>
                   </div>
                 </div>
               </div>
