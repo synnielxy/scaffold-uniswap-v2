@@ -23,14 +23,14 @@ const UniswapInterface = () => {
   const { data: wethAddressData } = useScaffoldReadContract({
     contractName: "UniswapV2Router02",
     functionName: "WETH",
-    chainId: targetNetwork.id,
+    chainId: 11155111,
   });
 
   // Read Factory address from UniswapV2Router02
   const { data: factoryAddressData } = useScaffoldReadContract({
     contractName: "UniswapV2Router02",
     functionName: "factory",
-    chainId: targetNetwork.id,
+    chainId: 11155111,
   });
 
   // Get pair address from UniswapV2Factory
@@ -38,18 +38,11 @@ const UniswapInterface = () => {
     contractName: "UniswapV2Factory",
     functionName: "getPair",
     args: [tokenA, tokenB],
-    enabled: Boolean(tokenA && tokenB && factoryAddress),
-    chainId: targetNetwork.id,
+    chainId: 11155111,
   });
 
   // Setup contract write function for swap
-  const { writeAsync: swapTokens, isLoading: isSwapping } = useScaffoldWriteContract({
-    contractName: "UniswapV2Router02",
-    functionName: "swapExactTokensForTokens",
-    args: [BigInt(amountIn), BigInt(amountOutMin), [tokenA, tokenB], address, BigInt(deadline)],
-    enabled: Boolean(tokenA && tokenB && address && amountIn && amountOutMin && deadline),
-    chainId: targetNetwork.id,
-  });
+  const { writeContractAsync, isMining } = useScaffoldWriteContract("UniswapV2Router02");
 
   // Update state when contract data is available
   useEffect(() => {
@@ -84,7 +77,10 @@ const UniswapInterface = () => {
         return;
       }
 
-      await swapTokens();
+      await writeContractAsync({
+        functionName: "swapExactTokensForTokens",
+        args: [BigInt(amountIn), BigInt(amountOutMin), [tokenA, tokenB], address, BigInt(deadline)],
+      });
     } catch (error) {
       console.error("Error swapping tokens:", error);
     }
@@ -187,9 +183,9 @@ const UniswapInterface = () => {
       <button
         className="btn btn-primary w-full"
         onClick={handleSwap}
-        disabled={!tokenA || !tokenB || !amountIn || !amountOutMin || isSwapping}
+        disabled={!tokenA || !tokenB || !amountIn || !amountOutMin || isMining}
       >
-        {isSwapping ? "Swapping..." : "Swap Tokens"}
+        {isMining ? "Swapping..." : "Swap Tokens"}
       </button>
 
       <div className="mt-6 text-sm opacity-70">

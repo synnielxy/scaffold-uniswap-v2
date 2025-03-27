@@ -349,9 +349,9 @@ const Home: NextPage = () => {
 
         // Get token details
         let token0Symbol = "Unknown";
-        let token0Decimals = 18;
+        let token0Decimals = 18; // Default to 18 decimals
         let token1Symbol = "Unknown";
-        let token1Decimals = 18;
+        let token1Decimals = 18; // Default to 18 decimals
 
         // Check if an address is a known token
         const checkKnownToken = (address: string) => {
@@ -398,7 +398,6 @@ const Home: NextPage = () => {
                 abi: erc20Abi,
                 functionName: "symbol",
               })) as string;
-              console.log("token0Symbol", token0Symbol);
             } catch (error) {
               console.log("Error reading token0 symbol:", error);
               // Try bytes32 symbol (some older tokens use bytes32 instead of string)
@@ -436,7 +435,7 @@ const Home: NextPage = () => {
               })) as number;
             } catch (error) {
               console.log("Error reading token0 decimals:", error);
-              token0Decimals = 18; // Default to 18 decimals
+              // Keep default value of 18
             }
           } else {
             // Not a contract, use address formatting
@@ -499,7 +498,7 @@ const Home: NextPage = () => {
               })) as number;
             } catch (error) {
               console.log("Error reading token1 decimals:", error);
-              token1Decimals = 18; // Default to 18 decimals
+              // Keep default value of 18
             }
           } else {
             // Not a contract, use address formatting
@@ -652,7 +651,6 @@ const Home: NextPage = () => {
 
       const tokenAddress = tokenType === "token0" ? selectedPool.token0.address : selectedPool.token1.address;
       const amount = tokenType === "token0" ? token0Amount : token1Amount;
-      const decimals = tokenType === "token0" ? selectedPool.token0.decimals || 18 : selectedPool.token1.decimals || 18;
 
       if (!amount || Number(amount) <= 0) {
         alert("Please enter a valid amount");
@@ -691,12 +689,9 @@ const Home: NextPage = () => {
         return;
       }
 
-      const decimals0 = selectedPool.token0.decimals || 18;
-      const decimals1 = selectedPool.token1.decimals || 18;
-
       // Calculate amounts with proper decimal points
-      const amountA = parseUnits(token0Amount, decimals0);
-      const amountB = parseUnits(token1Amount, decimals1);
+      const amountA = parseUnits(token0Amount, selectedPool.token0.decimals || 18);
+      const amountB = parseUnits(token1Amount, selectedPool.token1.decimals || 18);
 
       // Calculate minimum amounts based on slippage tolerance
       const slippagePercent = parseFloat(slippageTolerance) / 100;
@@ -811,7 +806,7 @@ const Home: NextPage = () => {
   };
 
   // Format token amount with decimals
-  const formatTokenAmount = (amount: string, decimals?: number) => {
+  const formatTokenAmount = (amount: string) => {
     // Format the token amount for display
     if (!amount) return "0";
     return parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -898,12 +893,10 @@ const Home: NextPage = () => {
                           <td className="font-bold">Reserves:</td>
                           <td>
                             <div>
-                              {formatTokenName(selectedPool.token0)}:{" "}
-                              {formatTokenAmount(selectedPool.reserves[0], selectedPool.token0.decimals)}
+                              {formatTokenName(selectedPool.token0)}: {formatTokenAmount(selectedPool.reserves[0])}
                             </div>
                             <div>
-                              {formatTokenName(selectedPool.token1)}:{" "}
-                              {formatTokenAmount(selectedPool.reserves[1], selectedPool.token1.decimals)}
+                              {formatTokenName(selectedPool.token1)}: {formatTokenAmount(selectedPool.reserves[1])}
                             </div>
                           </td>
                         </tr>

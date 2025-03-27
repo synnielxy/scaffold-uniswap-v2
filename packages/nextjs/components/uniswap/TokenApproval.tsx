@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useTargetNetwork } from "~~/hooks/scaffold-eth";
 
 interface TokenApprovalProps {
   tokenAddress: string;
@@ -7,36 +6,8 @@ interface TokenApprovalProps {
 }
 
 const TokenApproval = ({ tokenAddress, spenderAddress }: TokenApprovalProps) => {
-  const { targetNetwork } = useTargetNetwork();
   const [approvalAmount, setApprovalAmount] = useState<string>("0");
   const [isApproving, setIsApproving] = useState<boolean>(false);
-
-  // ERC20 Token ABI for approval
-  const erc20Abi = [
-    {
-      constant: false,
-      inputs: [
-        {
-          name: "spender",
-          type: "address",
-        },
-        {
-          name: "value",
-          type: "uint256",
-        },
-      ],
-      name: "approve",
-      outputs: [
-        {
-          name: "",
-          type: "bool",
-        },
-      ],
-      payable: false,
-      stateMutability: "nonpayable",
-      type: "function",
-    },
-  ];
 
   const handleApprove = async () => {
     try {
